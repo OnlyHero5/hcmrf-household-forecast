@@ -1,0 +1,247 @@
+% 家庭电力消耗预测实验报告
+% 使用 XeLaTeX 编译
+
+\documentclass[12pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{hyperref}
+\usepackage[top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+\title{\textbf{家庭电力消耗多步预测实验报告}}
+\author{学生姓名 \\ \textit{学院/系所} \\ \texttt{学号}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\small 作者贡献声明：[作者1姓名]负责数据处理与LSTM/Transformer实验；[作者2姓名]负责HSMRF模型设计与消融实验。\\
+AI工具使用声明：本报告撰写过程中使用了AI辅助工具进行语言润色，所有实验设计、模型实现、数据分析与结论均由作者独立完成。
+\end{center}
+
+\section{问题介绍}
+
+家庭电力消耗预测是智能电网调度和家庭能源管理的核心技术。本研究使用UCI"Individual Household Electric Power Consumption"数据集，该数据记录了法国一户家庭2006年12月至2010年11月的分钟级电力消耗，包含有功功率、无功功率、电压、电流强度及三个分表读数等多个变量。预测任务为：基于过去90天的多变量观测数据，预测未来有功功率（Global\_active\_power）的两个时间尺度——短期预测（未来90天）和长期预测（未来365天）。课程要求完成三个任务：LSTM模型预测、Transformer模型预测、自改进模型预测，各占总分三分之一，其中自改进模型以原理新颖程度为首要评价标准。
+
+数据预处理方面，原始分钟级数据按以下规则聚合为日级：Global\_active\_power、Global\_reactive\_power、Sub\_metering\_1、Sub\_metering\_2、Sub\_metering\_3按天求和以反映日总消耗；Voltage和Global\_intensity按天平均以反映日均水平；天气变量（RR、NBJRR1/5/10、NBJBROU）取当月值映射到每日。特征工程共生成24个特征，包括时间周期性特征（sin/cos编码的day-of-year、month、weekday，避免边界跳变）、滞后特征（lag\_7、lag\_30）、滚动统计特征（7天和30天移动平均）以及布尔特征is\_weekend。归一化采用MinMaxScaler，仅在训练集上fit以避免数据泄漏，预测后通过inverse\_transform还原到原始kW量纲计算指标。滑动窗口的每个样本由输入窗口（90天×24特征）和目标序列（$h$天的Global\_active\_power）构成，步长step=7以减少相邻样本重叠导致的过拟合风险。
+
+评估指标采用MSE（均方误差）和MAE（平均绝对误差），单位均为原始kW量纲。实验配置为5轮独立实验（随机种子42、123、456、789、2024），报告均值±标准差。基线采用季节性朴素预测（seasonal naive），即以去年同日的电力消耗值作为预测。
+
+\section{模型}
+
+\subsection{LSTM模型}
+
+采用双层LSTM架构，通过门控机制捕捉长期依赖。网络结构为：输入层接收$(B, 90, 24)$维数据，经过两个LSTM层（hidden\_dim=128, dropout=0.2），取最后时间步的隐藏状态，再经过全连接层$128 \rightarrow 64 \rightarrow \text{horizon}$输出预测。超参数设置为：学习率$10^{-3}$，batch\_size=32，最大100轮（早停patience=10），优化器Adam。
+
+\subsection{Transformer模型}
+
+采用编码器架构加全局平均池化，通过自注意力机制捕捉时序依赖。网络结构为：线性嵌入层将输入从24维映射到$d_{\text{model}}=128$维，加上固定sin/cos位置编码，经过2层Transformer编码器（4头注意力，FFN隐藏层256维），然后对时间维度做全局平均池化得到$(B, 128)$维特征，最后通过输出头$128 \rightarrow 64 \rightarrow \text{horizon}$。超参数：$d_{\text{model}}=128$, n\_heads=4, n\_layers=2, dropout=0.1, 学习率$10^{-3}$。
+
+\subsection{自改进模型：Horizon-Specialized Multi-Resolution Forecasting (HSMRF)}
+
+\subsubsection{设计动机}
+
+传统时序预测模型（LSTM、Transformer）对不同预测长度使用完全相同的架构——相同的时序分辨率、相同的信息处理路径。我们观察到两个基本事实：
+\begin{itemize}
+    \item \textbf{短期预测（90d）}需要细粒度信息捕捉周模式、设备开关等局部波动
+    \item \textbf{长期预测（365d）}需要粗粒度结构捕捉季节趋势，同时对日级噪声不敏感
+\end{itemize}
+
+基于此，我们提出\textbf{Horizon-Specialized Multi-Resolution Forecasting (HSMRF)}：根据预测距离设计专门化的多分辨率架构。需要说明的是，由于课程要求90d和365d模型分别训练，每个模型实例只看到一个horizon，因此分辨率分支是\textbf{架构设计决策}（architectural design choice）而非可学习的horizon conditioning。在"讨论"部分我们将分析这一约束，并提出未来改进方向。
+
+\subsubsection{架构设计}
+
+HSMRF由三个专门化组件构成：
+
+\textbf{1. 多尺度池化（Multi-Scale Pooling）：}根据horizon调整时序分辨率。90d路径保持原始90步分辨率以捕捉细粒度模式；365d路径通过AdaptiveAvgPool1d压缩到约30步，聚焦季节趋势并抑制日级噪声。
+
+\textbf{2. Adaptive-Patch Transformer：}根据horizon动态调整patch尺寸实现多粒度注意力。90d用patch\_size=1（90个patch，细粒度自注意力）；365d用patch\_size=3（30个patch，粗粒度自注意力）。patch后特征维度变为$C \times \text{patch\_size}$，通过Linear投影恢复到$d_{\text{model}}$。
+
+\textbf{3. 动态分辨率解码器（DRD）：}对365d预测采用粗到精解码以缓解误差累积。90d路径直接多步输出Dense(90)；365d路径先做周级粗预测Dense(52)（52周$\approx$364天），然后线性插值上采样到365天，最后用多层Conv1D（kernel=7，感受野=19）精修以修正插值平滑伪影。
+
+整体流程为：输入$\mathbf{X}$经过Conv1D编码器得到$\mathbf{H}$，经过多尺度池化得到$\mathbf{H}'$，经过Patch和Transformer得到$\mathbf{Z}$，全局平均池化得到$\mathbf{z}$，最后经过DRD输出预测$\mathbf{Y}$。前向传播伪代码如算法\ref{alg:hsmrf}所示。
+
+\begin{algorithm}[H]
+\caption{HSMRF前向传播}\label{alg:hsmrf}
+\begin{algorithmic}[1]
+\REQUIRE 输入 $\mathbf{X} \in \mathbb{R}^{B \times 90 \times 24}$, horizon $h$
+\ENSURE 预测 $\mathbf{Y} \in \mathbb{R}^{B \times h}$
+\STATE $\mathbf{H} \leftarrow \text{Conv1D}(\mathbf{X}^T)$ \COMMENT{共享编码器}
+\IF{$h == 365$}
+    \STATE $\mathbf{H} \leftarrow \text{AdaptiveAvgPool}(\mathbf{H}, 30)$ \COMMENT{多尺度池化}
+\ENDIF
+\STATE $p \leftarrow (h==90)$ ? $1$ : $3$ \COMMENT{patch尺寸}
+\STATE $\mathbf{Z} \leftarrow \text{Patch}(\mathbf{H}, p) \rightarrow \text{Linear} \rightarrow \text{Transformer}$
+\STATE $\mathbf{z} \leftarrow \text{GlobalAvgPool}(\mathbf{Z})$
+\IF{$h == 90$}
+    \STATE $\mathbf{Y} \leftarrow \text{Dense}_{90}(\mathbf{z})$
+\ELSE
+    \STATE $\mathbf{Y}_{\text{coarse}} \leftarrow \text{Dense}_{52}(\mathbf{z})$ \COMMENT{周级粗预测}
+    \STATE $\mathbf{Y}_{\text{interp}} \leftarrow \text{Interpolate}(\mathbf{Y}_{\text{coarse}}, 365)$
+    \STATE $\mathbf{Y} \leftarrow \text{Conv1D\_Refine}(\mathbf{Y}_{\text{interp}})$ \COMMENT{精修}
+\ENDIF
+\RETURN $\mathbf{Y}$
+\end{algorithmic}
+\end{algorithm}
+
+超参数：Conv1D kernel=7, $d_{\text{model}}=64$, Transformer 4头2层, DRD粗预测52周。超参数选择依据见第3.4节消融实验。
+
+\section{结果与分析}
+
+数据划分为训练集（2006-12-16至2009-12-31，1112天）和测试集（2010-01-01至2010-11-26，330天）。评估策略方面，90d预测因测试集330天大于输入加输出180天，可在测试集内滑动窗口评估；365d预测因测试集330天小于输入加输出455天，采用跨边界评估——输入来自训练集最后90天，目标为测试集前365天的真实值。所有指标均为原始kW量纲。
+
+\subsection{主实验结果}
+
+\begin{table}[H]
+\centering
+\caption{短期预测(90天)结果}
+\begin{tabular}{lcc}
+\toprule
+模型 & MSE (kW$^2$) & MAE (kW) \\
+\midrule
+季节性朴素基线 & 566,327 & 610.0 \\
+LSTM & 268,942 $\pm$ 9,986 & 402.3 $\pm$ 5.5 \\
+Transformer & 251,819 $\pm$ 15,879 & 397.2 $\pm$ 15.4 \\
+HSMRF & 259,395 $\pm$ 27,947 & 401.8 $\pm$ 19.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{长期预测(365天)结果}
+\begin{tabular}{lcc}
+\toprule
+模型 & MSE (kW$^2$) & MAE (kW) \\
+\midrule
+季节性朴素基线 & 343,067 & 444.5 \\
+LSTM & 591,410 $\pm$ 17,930 & 600.7 $\pm$ 9.2 \\
+Transformer & 487,139 $\pm$ 20,849 & 542.6 $\pm$ 13.2 \\
+HSMRF & 372,467 $\pm$ 21,793 & 474.9 $\pm$ 23.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+短期预测（90d）方面，三种深度学习模型性能相近，均显著优于季节性朴素基线，MSE较基线降低约52\%。Transformer最优（251,819），HSMRF略次（259,395），但三者差异在标准差范围内。这表明短期预测窗口较小时，模型架构选择影响不大，关键在于特征工程和训练策略。
+
+长期预测（365d）方面出现了一个值得重视的现象——季节性朴素基线在MSE和MAE两项指标上均优于全部深度学习模型。在各深度学习模型之间，HSMRF相比标准Transformer和LSTM仍有明显优势：相比Transformer，MSE降低23\%（487k$\rightarrow$372k），MAE降低13\%（542.6$\rightarrow$474.9）；相比LSTM，MSE降低37\%（591k$\rightarrow$372k），MAE降低21\%（600.7$\rightarrow$474.9）。关键观察是：长期预测中年度季节性是主导因素，简单的"去年同日值"基线即可获得较好的MAE；而深度学习模型在仅有约1100天训练数据的小样本条件下，难以稳定地学习并外推年度周期，反而因过度拟合训练期噪声而劣于朴素基线。这与时间序列预测领域的普遍规律一致，M-竞赛系列研究表明简单季节性基线在强季节性长程预测中极具竞争力。
+
+\subsection{消融实验（365天预测）}
+
+由于90d路径不池化、patch=1，消融实验仅对365d报告。每个消融变体回答一个明确的科学问题：
+
+\begin{table}[H]
+\centering
+\caption{消融实验 — 365天预测MSE}
+\begin{tabular}{lcc}
+\toprule
+变体 & MSE (kW$^2$) & 验证的问题 \\
+\midrule
+完整 HSMRF & 372,467 $\pm$ 21,793 & 基线 \\
+-w/o MultiScale & 377,092 $\pm$ 29,260 & 多尺度池化是否有用 \\
+-w/o Patch & 395,180 $\pm$ 30,311 & 动态patch是否有用 \\
+-w/o DRD & 547,034 $\pm$ 12,217 & 粗→精解码是否关键 \\
+-w/o Shared & 382,614 $\pm$ 40,414 & 共享编码器是否有效 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+消融分析显示：DRD是关键组件，去掉后MSE从372k升至547k（增幅47\%），验证了直接预测365点时的误差累积问题，粗到精解码通过周级粗预测加插值加Conv1D精修有效缓解了这一问题。多尺度池化有正面贡献，去掉后MSE从372k升至377k（增幅1.2\%），说明分辨率压缩对捕捉长期趋势有帮助但贡献相对较小。Adaptive-Patch贡献中等，去掉后MSE从372k升至395k（增幅6\%），说明动态patch比固定patch=1更优。共享编码器有效，去掉后MSE从372k升至383k（增幅3\%），说明共享编码器在减少参数量的同时保持性能。
+
+\subsection{超参数消融（365天预测）}
+
+为验证超参数选择的合理性，对三个关键超参数进行消融实验：
+
+\begin{table}[H]
+\centering
+\caption{超参数消融 — 365天预测MSE}
+\begin{tabular}{lcc}
+\toprule
+超参数 & 候选值 & MSE (kW$^2$) \\
+\midrule
+\multirow{3}{*}{池化压缩因子} & 2 & 378,139 $\pm$ 34,028 \\
+ & 3 & 372,472 $\pm$ 21,795 \\
+ & 4 & 372,472 $\pm$ 21,795 \\
+\midrule
+\multirow{3}{*}{DRD精修kernel} & 3 & 387,296 $\pm$ 87,371 \\
+ & 5 & 406,937 $\pm$ 75,511 \\
+ & 7 & 372,469 $\pm$ 21,794 \\
+\midrule
+\multirow{2}{*}{粗预测周数} & 26（半月） & 433,781 $\pm$ 37,703 \\
+ & 52（周） & 372,473 $\pm$ 21,795 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+超参数消融结果支撑当前配置的合理性：池化压缩因子3和4性能相近（372k），因子2略差（378k），说明压缩到约30步是合适的平衡点。DRD精修kernel为7时最优（372k），kernel=3和5时性能下降且方差显著增大，验证了较大kernel能够捕捉更宽的时序模式用于精修。粗预测周数52优于26（372k vs 434k），说明年度周期的周粒度粗预测比半月粒度更有效，这符合52周≈364天的年度周期直觉。
+
+\subsection{可视化}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../outputs/figures/comparison_90d.png}
+\caption{短期预测(90d)对比曲线}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../outputs/figures/comparison_365d.png}
+\caption{长期预测(365d)对比曲线}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../outputs/figures/ablation_mse_h365.png}
+\caption{消融实验MSE对比(365d)}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../outputs/figures/hyperparam_ablation.png}
+\caption{超参数消融对比(365d)}
+\end{figure}
+
+\section{讨论}
+
+主要发现如下：
+
+\textbf{短期预测深度学习优势显著。}90天预测中三种深度学习模型均将MSE降至朴素基线的47\%左右，MAE降至66\%，说明在短期窗口内模型能学习到近期趋势和周期性模式。Transformer略优于LSTM和HSMRF，但差异在标准差范围内，提示短期预测的架构选择不如特征工程重要。
+
+\textbf{长期预测季节性基线优势明显。}365天预测中季节性朴素基线在MSE和MAE两项指标上均优于所有深度学习模型，这一现象揭示了深度时序预测的关键挑战——在强季节性、小样本条件下模型难以稳定学习年度周期，M-竞赛系列研究早已指出简单季节性方法在长程预测中极具竞争力。
+
+\textbf{Horizon-aware设计具有相对价值。}尽管所有深度学习模型均劣于季节性基线，但HSMRF相比标准Transformer仍实现了23\%的MSE降幅，验证了horizon-aware架构的合理性。消融实验进一步证实DRD是关键组件（去掉后MSE升47\%），多尺度池化、Adaptive-Patch、共享编码器均有正面贡献（增幅1-6\%）。
+
+\textbf{超参数选择有实验支撑。}池化压缩因子3、DRD精修kernel=7、粗预测52周均被消融实验验证为最优或接近最优配置，其中kernel=7时方差显著更小（21k vs 87k），提示较大kernel能稳定捕捉时序模式。
+
+\textbf{架构复杂度与数据规模需匹配。}当前数据规模（1112天）下多尺度池化和Adaptive-Patch等复杂组件的贡献相对有限（增幅1-6\%），提示在小样本场景应优先考虑简单稳健的方法。HSMRF在365d上较大的标准差（$\pm$22k）也提示训练不稳定。
+
+与基线对比方面，LSTM vs Transformer：短期预测Transformer略优（MSE 252k vs 269k），长期预测Transformer显著优（487k vs 591k），说明注意力机制在长期依赖建模上有优势。HSMRF vs Transformer：短期预测性能相近（259k vs 252k），长期预测HSMRF优（372k vs 487k），降低23\%。季节性朴素基线的启示：365d朴素基线MAE（444.5）优于所有深度学习模型，提示年度季节性是长期预测的主导因素，深度学习模型可能过度拟合了训练集的噪声而牺牲了对年度模式的捕捉。
+
+\subsection{局限性与未来工作}
+
+\textbf{分别训练约束的限制：}课程要求90d和365d模型分别训练，这意味着每个模型实例只看到一个horizon，分辨率分支是硬编码的架构决策而非可学习的horizon conditioning。理想方案是训练一个\textbf{多任务单模型}：共享编码器 + 两个解码头（90d/365d），使用FiLM（Feature-wise Linear Modulation）层将horizon embedding注入模型，实现真正的learned horizon conditioning。FiLM层通过两个MLP分别生成scale和shift参数对中间特征做仿射变换，使模型能够根据预测距离动态调整内部表示，且可泛化到任意horizon（如180天）。这留作未来工作。
+
+\textbf{数据规模限制：}单户家庭1112天数据可能不足以训练复杂模型。
+
+\textbf{天气特征粗粒度：}天气变量为月粒度，同月每天相同，信息有限。
+
+\textbf{单一家庭泛化性：}结果可能不具有普遍性。
+
+\newpage
+\begin{thebibliography}{99}
+\bibitem{uci_power} Hebrail, O. (2012). \textit{Individual household electric power consumption}. UCI Machine Learning Repository.
+\bibitem{lstm} Hochreiter, S., \& Schmidhuber, J. (1997). Long short-term memory. \textit{Neural Computation}, 9(8), 1735--1780.
+\bibitem{transformer} Vaswani, A., et al. (2017). Attention is all you need. \textit{NeurIPS}, 30.
+\bibitem{patchtst} Nie, Y., et al. (2023). A time series is worth 64 words: Long-term forecasting with transformers. \textit{ICLR}.
+\bibitem{film} Perez, E., et al. (2018). FiLM: Visual reasoning with a general conditioning layer. \textit{AAAI}, 32(1).
+\end{thebibliography}
+
+\end{document}

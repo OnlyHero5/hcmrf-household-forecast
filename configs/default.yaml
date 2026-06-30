@@ -1,0 +1,57 @@
+# ============================================================
+# 家庭电力消耗预测 — 全局配置文件
+# ============================================================
+
+# 数据配置
+data:
+  data_path: "data/processed"  # 已处理数据目录
+  input_len: 90                # 输入窗口长度（天）
+  short_horizon: 90            # 短期预测 horizon
+  long_horizon: 365            # 长期预测 horizon
+  step_size: 7                 # 滑动窗口步长（>1 减少样本重叠）
+  val_ratio: 0.2               # 验证集比例（取训练集末尾）
+
+# 训练配置
+training:
+  batch_size: 32
+  max_epochs: 100
+  patience: 10                 # 早停耐心值
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  seed: 42
+
+# LSTM 模型配置
+lstm:
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.2
+
+# Transformer 模型配置
+transformer:
+  d_model: 128
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 256
+  dropout: 0.1
+
+# HCMRF 模型配置
+hcmrf:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 256
+  dropout: 0.1
+  encoder_kernel_size: 7
+  encoder_filters: 64
+  drd_coarse_weeks: 52         # 365d 粗预测周数
+  drd_refine_layers: 3         # Conv1D 精修层数
+  drd_refine_kernel: 7         # Conv1D 精修核大小
+  hcm_compress_factor: 3       # HCM 365d 压缩因子
+  hcm_min_steps: 30            # HCM 最小时间步数
+  patch_size_90d: 1            # 90d patch 尺寸
+  patch_size_365d: 3           # 365d patch 尺寸
+
+# 特征工程配置
+features:
+  lag_days: [7, 30]            # 滞后天数列表
+  rolling_windows: [7, 30]     # 滚动窗口大小列表
