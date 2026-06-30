@@ -9,6 +9,9 @@ build/
 outputs/
 lightning_logs/
 
+# Data (large, regenerable)
+data/
+
 # Environment
 .env
 .venv
