@@ -11,6 +11,9 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+plt.rcParams["font.sans-serif"] = ["WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
 import numpy as np
 import pandas as pd
 import torch
@@ -78,10 +81,10 @@ def plot_model_comparison(ckpt_paths: dict[str, str], horizon: int, save_path: s
     fig, ax = plt.subplots(figsize=(14, 5))
 
     gt_shown = False
-    colors = {"LSTM": "tab:blue", "Transformer": "tab:orange", "HCMRF": "tab:green"}
+    colors = {"LSTM": "tab:blue", "Transformer": "tab:orange", "多分辨率模型": "tab:green"}
 
     for name, ckpt in ckpt_paths.items():
-        model_key = name.lower()
+        model_key = "hcmrf" if name == "多分辨率模型" else name.lower()
         cfg = Config(model_name=model_key, horizon=horizon)
         y_pred, y_true = _predict_one_sample(cfg, ckpt)
 
@@ -89,13 +92,13 @@ def plot_model_comparison(ckpt_paths: dict[str, str], horizon: int, save_path: s
         ax.plot(y_pred, label=name, alpha=0.8, color=color, linewidth=1.5)
 
         if not gt_shown:
-            ax.plot(y_true, label="Ground Truth", color="black", linewidth=2.5, linestyle="--")
+            ax.plot(y_true, label="真实值", color="black", linewidth=2.5, linestyle="--")
             gt_shown = True
 
     ax.legend(loc="upper right", fontsize=10)
-    ax.set_title(f"Power Consumption Prediction Comparison (horizon={horizon}d)", fontsize=14)
-    ax.set_xlabel("Days ahead", fontsize=12)
-    ax.set_ylabel("Global Active Power (kW)", fontsize=12)
+    ax.set_title(f"电力消耗预测对比（{horizon} 天）", fontsize=14)
+    ax.set_xlabel("预测天数", fontsize=12)
+    ax.set_ylabel("有功功率 (kW)", fontsize=12)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, horizon)
     fig.tight_layout()
@@ -115,11 +118,11 @@ def plot_ablation(summary_path: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
 
     name_map = {
-        "hcmrf": "HCMRF (Full)",
-        "hcmrf_wo_MultiScale": "-w/o MultiScale",
-        "hcmrf_wo_Patch": "-w/o Patch",
-        "hcmrf_wo_DRD": "-w/o DRD",
-        "hcmrf_wo_Shared": "-w/o Shared",
+        "hcmrf": "完整模型",
+        "hcmrf_wo_MultiScale": "去掉多尺度池化",
+        "hcmrf_wo_Patch": "去掉自适应分块",
+        "hcmrf_wo_DRD": "去掉动态解码器",
+        "hcmrf_wo_Shared": "去掉共享编码器",
     }
     variants = ["hcmrf", "hcmrf_wo_MultiScale", "hcmrf_wo_Patch", "hcmrf_wo_DRD", "hcmrf_wo_Shared"]
 
@@ -143,8 +146,8 @@ def plot_ablation(summary_path: str, output_dir: str):
     ax.bar(x, df["MSE"] / 1000, yerr=df["MSE_std"] / 1000, capsize=4, color="steelblue", alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(df["variant"], rotation=30, ha="right", fontsize=11)
-    ax.set_ylabel("MSE (×10³ kW²)", fontsize=12)
-    ax.set_title("Ablation Study — MSE (365d)", fontsize=14)
+    ax.set_ylabel("MSE ($\\times 10^3$ kW$^2$)", fontsize=12)
+    ax.set_title("消融实验——MSE（365 天）", fontsize=14)
     ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "ablation_mse_h365.png"), dpi=150)
@@ -156,7 +159,7 @@ def plot_ablation(summary_path: str, output_dir: str):
     ax.set_xticks(x)
     ax.set_xticklabels(df["variant"], rotation=30, ha="right", fontsize=11)
     ax.set_ylabel("MAE (kW)", fontsize=12)
-    ax.set_title("Ablation Study — MAE (365d)", fontsize=14)
+    ax.set_title("消融实验——MAE（365 天）", fontsize=14)
     ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "ablation_mae_h365.png"), dpi=150)
@@ -185,9 +188,9 @@ def plot_hyperparam_ablation(summary_path: str, output_dir: str):
         axes[0].bar(range(len(labels)), mse_vals, yerr=mse_stds, capsize=4, color="steelblue", alpha=0.8)
         axes[0].set_xticks(range(len(labels)))
         axes[0].set_xticklabels(labels)
-        axes[0].set_xlabel("Compress Factor")
-        axes[0].set_ylabel("MSE (×10³ kW²)")
-        axes[0].set_title("Pool Compression Factor")
+        axes[0].set_xlabel("压缩因子")
+        axes[0].set_ylabel("MSE ($\\times 10^3$ kW$^2$)")
+        axes[0].set_title("池化压缩因子")
         axes[0].grid(True, alpha=0.3, axis="y")
 
     # 精修 kernel
@@ -200,9 +203,9 @@ def plot_hyperparam_ablation(summary_path: str, output_dir: str):
         axes[1].bar(range(len(labels)), mse_vals, yerr=mse_stds, capsize=4, color="coral", alpha=0.8)
         axes[1].set_xticks(range(len(labels)))
         axes[1].set_xticklabels(labels)
-        axes[1].set_xlabel("Kernel Size")
-        axes[1].set_ylabel("MSE (×10³ kW²)")
-        axes[1].set_title("DRD Refine Kernel")
+        axes[1].set_xlabel("卷积核大小")
+        axes[1].set_ylabel("MSE ($\\times 10^3$ kW$^2$)")
+        axes[1].set_title("解码器卷积核")
         axes[1].grid(True, alpha=0.3, axis="y")
 
     # 粗预测周数
@@ -215,12 +218,12 @@ def plot_hyperparam_ablation(summary_path: str, output_dir: str):
         axes[2].bar(range(len(labels)), mse_vals, yerr=mse_stds, capsize=4, color="seagreen", alpha=0.8)
         axes[2].set_xticks(range(len(labels)))
         axes[2].set_xticklabels(labels)
-        axes[2].set_xlabel("Coarse Weeks")
-        axes[2].set_ylabel("MSE (×10³ kW²)")
-        axes[2].set_title("Coarse Prediction Weeks")
+        axes[2].set_xlabel("粗预测周数")
+        axes[2].set_ylabel("MSE ($\\times 10^3$ kW$^2$)")
+        axes[2].set_title("粗预测周数")
         axes[2].grid(True, alpha=0.3, axis="y")
 
-    fig.suptitle("Hyperparameter Ablation Study (365d)", fontsize=14, fontweight="bold")
+    fig.suptitle("超参数消融（365 天）", fontsize=14, fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "hyperparam_ablation.png"), dpi=150)
     plt.close(fig)
@@ -247,7 +250,7 @@ def main():
     ckpts_90 = {
         "LSTM": find_ckpt("lstm", 90),
         "Transformer": find_ckpt("transformer", 90),
-        "HCMRF": find_ckpt("hcmrf", 90),
+        "多分辨率模型": find_ckpt("hcmrf", 90),
     }
     ckpts_90 = {k: v for k, v in ckpts_90.items() if v}
     if ckpts_90:
@@ -257,7 +260,7 @@ def main():
     ckpts_365 = {
         "LSTM": find_ckpt("lstm", 365),
         "Transformer": find_ckpt("transformer", 365),
-        "HCMRF": find_ckpt("hcmrf", 365),
+        "多分辨率模型": find_ckpt("hcmrf", 365),
     }
     ckpts_365 = {k: v for k, v in ckpts_365.items() if v}
     if ckpts_365:
