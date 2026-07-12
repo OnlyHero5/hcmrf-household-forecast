@@ -68,7 +68,8 @@ class Config:
     input_len: int = 90
     short_horizon: int = 90
     long_horizon: int = 365
-    step_size: int = 7                  # 滑动窗口步长；7 减少重叠，1 最大化样本数
+    step_size: int = 1                  # 训练窗口步长；验证/测试使用隔离的固定预测起点
+    output_root: str = "outputs/revised"
 
     # ===== Training =====
     batch_size: int = 32
@@ -149,7 +150,7 @@ def load_config(yaml_path: str) -> Config:
     # Training section
     if "training" in raw:
         train = raw["training"]
-        for k in ["batch_size", "max_epochs", "patience", "learning_rate", "weight_decay", "seed"]:
+        for k in ["batch_size", "max_epochs", "patience", "learning_rate", "weight_decay", "seed", "output_root"]:
             if k in train:
                 setattr(cfg, k, train[k])
 

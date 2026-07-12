@@ -1,232 +1,282 @@
-% 家庭电力消耗预测实验报告
-% 使用 XeLaTeX 编译
-
-\documentclass[12pt,a4paper]{article}
+% 机器学习课程项目报告；使用 XeLaTeX 编译
+\documentclass[11pt,a4paper]{article}
 \usepackage[UTF8]{ctex}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
-\usepackage{float}
 \usepackage{booktabs}
-\usepackage{multirow}
-\usepackage{algorithm}
-\usepackage{algorithmic}
-\usepackage{hyperref}
-\usepackage[top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm]{geometry}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{geometry}
 \usepackage{setspace}
-\onehalfspacing
+\usepackage{hyperref}
 
-\renewcommand{\algorithmicrequire}{\textbf{输入：}}
-\renewcommand{\algorithmicensure}{\textbf{输出：}}
-\renewcommand{\algorithmiccomment}[1]{\hfill\textit{#1}}
+\geometry{top=2.35cm,bottom=2.35cm,left=2.45cm,right=2.45cm}
+\setstretch{1.28}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.15em}
+\renewcommand{\arraystretch}{1.18}
+\captionsetup{font=small,labelfont=bf}
+\hypersetup{colorlinks=false,pdfborder={0 0 0}}
+\raggedbottom
+\setlength{\emergencystretch}{2em}
 
-\title{\textbf{家庭电力消耗多步预测实验报告}}
-\author{学生姓名 \\ \textit{学院/系所} \\ \texttt{学号}}
-\date{\today}
+\title{\bfseries 家庭日用电量的多步预测\\
+\large LSTM、Transformer 与多分辨率模型的对比实验}
+\author{
+姓名：潘沈昕\quad 学号：20255227126
+}
+\date{2026 年 7 月}
 
 \begin{document}
 \maketitle
 
-\begin{center}
-\small
-作者贡献声明：[作者1姓名]负责数据处理与 LSTM、Transformer 实验；[作者2姓名]负责自改进模型设计与消融实验。\\
-代码仓库：\url{https://github.com/OnlyHero5/hcmrf-household-forecast}\\
-AI 工具使用声明：正文结构与部分表述经 ChatGPT 辅助整理，实验设计、代码实现、数值结果与结论均由作者核对确认。
-\end{center}
+\noindent\textbf{代码地址：}\url{https://github.com/OnlyHero5/hcmrf-household-forecast}
 
 \section{问题介绍}
 
-本实验使用 UCI 家庭电力消耗数据集：法国一户家庭 2006 年 12 月至 2010 年 11 月的分钟级记录，含全局有功/无功功率、电压、电流及三路分表读数。任务是用过去 90 天的多变量日序列，分别预测未来 90 天（短期）和 365 天（长期）的全局有功功率。课程要求实现 LSTM、Transformer 和自改进模型三类方法，各占三分之一分值；开放题部分以方法新颖性为主、性能为辅。
+\subsection{预测任务}
 
-数据预处理先将分钟级记录聚合为日级：有功/无功功率与三路分表按日求和，电压与电流强度按日平均；天气变量（降水、降水天数、雾天等）按月取值映射到对应日期。在此基础上构造 24 维特征：日序/月份/星期的正弦余弦编码（避免 12 月 31 日与 1 月 1 日边界跳变）、7 日与 30 日滞后、7 日与 30 日滑动均值，以及是否周末。归一化采用最小--最大缩放，仅在训练集上拟合参数，评估时将预测反变换回千瓦量纲后再算指标。每个样本的输入为 $90 \times 24$，目标为未来 $h$ 天的有功功率；滑动步长取 7，减轻相邻窗口重叠带来的过拟合。
+实验数据来自 UCI Individual Household Electric Power Consumption 数据集\cite{uci_power}，包含法国一户家庭 2006 年 12 月至 2010 年 11 月的分钟级用电记录，字段包括总有功功率、总无功功率、电压、电流和三路分表能耗。任务设定为：以最近 90 天为输入，分别预测之后 90 天和 365 天的总有功功率，LSTM、Transformer 和一个改进模型各自独立训练。
 
-评价指标为均方误差（MSE）和平均绝对误差（MAE）。每种配置重复 5 次实验（随机种子 42、123、456、789、2024），报告均值 $\pm$ 标准差。另设季节性朴素基线：直接取去年同日的用电量作为预测。
+数据来自单一家庭，总长度不足四年。当 90 天输入对应 365 天输出时，模型容易退化为仅捕捉平滑的季节曲线，难以反映日级波动。实验中除三种神经网络外，还引入了季节性朴素预测和 Ridge 直接多步预测作为基线，以判断复杂模型相比简单方法是否具有实质性的性能提升。
+
+\subsection{日级数据处理}
+
+原始字段 \texttt{Global\_active\_power} 表示一分钟区间内的平均有功功率，单位为 kW。为了得到每天实际消耗的电能，按下式将分钟功率积分为日用电量：
+\begin{equation}
+E_d=\frac{1}{60}\sum_{m\in d}P_m,
+\end{equation}
+其中 $E_d$ 的单位为 kWh。无功功率按同样方式积分为日值；三路分表记录的是每分钟 Wh，按天求和即可；电压和电流取日平均值。
+
+原始记录中有 9 天完全缺失。如果直接按已有日期生成滑动窗口，窗口中的相邻行不一定对应相邻两天。预处理时先补全连续日历，再对缺失值做线性插值，连续插值最多 5 天。天气数据采用 Météo-France 发布的月度基础气象数据\cite{meteo_monthly}，同月内各日共用一组月度统计值。此类变量仅能反映月份之间的差异，对日级用电变化的解释力有限。
+
+处理后的日期范围为 2006-12-16 至 2010-11-26，共 1442 天。以 2010-01-01 为训练/测试边界，训练文件包含 1112 天，测试文件包含 330 天。模型输入由 13 个日级用电及天气变量和 11 个工程特征组成。工程特征包括年、月、星期的周期编码、周末标记、7 天和 30 天滞后，以及对应的滚动均值。
+
+\begin{table}[H]
+\centering
+\caption{日级数据与输入特征概况}
+\label{tab:data}
+\begin{tabular}{ll}
+\toprule
+项目 & 数值或处理方式 \\
+\midrule
+完整日期范围 & 2006-12-16 至 2010-11-26，共 1442 天 \\
+训练文件 & 1112 天，2006-12-16 至 2009-12-31 \\
+测试文件 & 330 天，2010-01-01 至 2010-11-26 \\
+完全缺失 & 9 天，补全日期后插值 \\
+训练段日用电量 & 均值 26.26 kWh，标准差 10.57 kWh \\
+测试段日用电量 & 均值 24.70 kWh，标准差 8.69 kWh \\
+模型输入 & 90 天 $\times$ 24 维特征 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{比较思路}
+
+LSTM 通过门控状态保存序列信息\cite{lstm}，Transformer 则利用自注意力直接建立不同时间位置之间的联系\cite{transformer}。PatchTST 将相邻时间点组成 patch，以更短的 token 序列建模长期依赖\cite{patchtst}。然而 DLinear 和 M4 竞赛的结果提示，长周期预测中简单模型未必逊于复杂模型\cite{dlinear,m4}。
+
+实验主要关注两个方面：LSTM 和 Transformer 在短期与长期预测上的性能差距，以及降低时间分辨率能否改善 365 天预测。消融实验则用于拆解改进模型中各组件的独立贡献。评价指标采用 MSE 和 MAE，神经网络均使用 5 个随机种子重复训练，报告均值与样本标准差。
 
 \section{模型}
 
-\subsection{LSTM 模型}
+\subsection{任务形式}
 
-采用双层 LSTM。输入形状为 $(B, 90, 24)$，经两层 LSTM（隐层 128 维，丢弃率 0.2）后取末时刻隐状态，再经全连接层 $128 \rightarrow 64 \rightarrow h$ 输出 $h$ 步预测。优化器为 Adam，学习率 $10^{-3}$，批大小 32，最多训练 100 轮，验证集 10 轮无改善则早停。
+设 $\mathbf{X}_t\in\mathbb{R}^{90\times24}$ 表示预测起点前 90 天的输入，$\mathbf{y}_{t,h}\in\mathbb{R}^{h}$ 表示之后 $h$ 天的日用电量，其中 $h\in\{90,365\}$。短期和长期模型分别训练：
+\begin{equation}
+f_h:\mathbf{X}_t\mapsto\hat{\mathbf{y}}_{t,h}.
+\end{equation}
+三种模型均直接输出完整预测区间，不使用递归预测，从而避免了前一天预测值继续作为后续输入所产生的误差累积；但输出曲线通常较真实日用电量更为平滑。
 
-\subsection{Transformer 模型}
+\subsection{LSTM 与 Transformer}
 
-采用仅含编码器的结构。先将 24 维特征线性映射到 128 维，叠加固定正弦位置编码，再堆叠 2 层编码器（4 头注意力，前馈隐层 256 维，丢弃率 0.1）。对时间维做全局平均池化后，经 $128 \rightarrow 64 \rightarrow h$ 输出头得到预测。其余训练设置与 LSTM 相同。
+LSTM 使用两层循环网络，隐藏维度为 128，层间 dropout 为 0.2。最后一个时间步的隐藏状态经过 $128\rightarrow64\rightarrow h$ 的全连接层得到预测结果。
 
-\subsection{自改进模型：预测步长特化的多分辨率模型}
+Transformer 先将 24 维输入映射到 128 维，并加入正弦位置编码，随后经过两层、四头的 Transformer Encoder。编码结果沿时间维平均池化，再由全连接层输出未来 $h$ 天的值。两个基线均未使用特殊结构，模型之间的差异可归因于序列建模方式本身。
 
-以下简称为\textbf{多分辨率模型}。其核心想法是：90 天和 365 天预测对时间粒度的需求不同——短期要保留日级波动，长期更应关注季节趋势、抑制日噪声。因此为两种步长分别设计编码与解码路径，而不是共用同一套结构。
+\subsection{HCMRF 多分辨率模型}
 
-由于课程要求 90 天与 365 天模型分开训练，每个实例只对应一种预测长度，分支选择是写进网络结构的，并非由模型在线学习。这一点在讨论部分会再说明。
+改进模型记为 HCMRF，其设计思想是：90 天预测需要保留日级细节，365 天预测则更依赖低频趋势。两种跨度采用同构模块、分别训练，时间分辨率与输出路径是预设的架构选择，不在两个任务之间共享训练参数。
 
-模型包含三个模块：
+输入首先经过核大小为 7、通道数为 64 的一维卷积。90 天路径保留全部 90 个时间步，patch 大小为 1；365 天路径将序列平均池化到 30 步，再把相邻 3 步拼成一个 patch，最终得到 10 个 token。patch 投影到 64 维后加入位置编码，并送入两层、四头的 Transformer Encoder。
 
-\textbf{（1）多尺度池化。}365 天路径将 90 步序列自适应平均池化到约 30 步；90 天路径保持原始分辨率。
+两条路径的解码器设计差异更为显著。90 天路径仅使用全连接层直接输出 90 个值。365 天路径则分三个阶段：首先预测 52 个粗粒度值（大致对应周级别），随后线性插值至 365 天，最后采用三层一维卷积对局部形状进行微调。模型先确定年度轮廓，再在此基础上叠加日级变化。
 
-\textbf{（2）自适应分块 Transformer。}365 天路径分块大小为 3（约 30 块），90 天路径分块大小为 1（90 块）。分块后通过线性层映射回 64 维，再经 2 层 Transformer 编码。
+\begin{center}
+\fbox{\parbox{0.91\textwidth}{
+\centering
+90 天多变量输入 $\rightarrow$ 一维卷积 $\rightarrow$ 时间分辨率调整
+$\rightarrow$ Patch Transformer $\rightarrow$ 全局池化 $\rightarrow$ 跨度对应的解码器
+}}
+\end{center}
 
-\textbf{（3）动态分辨率解码器。}90 天路径由全连接层直接输出 90 个点。365 天路径先预测 52 周（约 364 天）的粗序列，线性插值到 365 天，再用三层一维卷积（核大小 7，感受野 19）做局部修正。
+\begin{table}[H]
+\centering
+\caption{模型规模与主要设置}
+\label{tab:params}
+\begin{tabular}{lccc}
+\toprule
+模型 & 90 天参数量 & 365 天参数量 & 主要结构 \\
+\midrule
+LSTM & 225,050 & 242,925 & 两层 LSTM + 直接多步输出 \\
+Transformer & 282,266 & 300,141 & 两层四头编码器 + 平均池化 \\
+HCMRF & 151,823 & 151,823 & 卷积 + 分块编码 + 分辨率解码 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-整体流程：输入 $\mathbf{X}$ 经一维卷积编码得 $\mathbf{H}$，多尺度池化得 $\mathbf{H}'$，分块 Transformer 得 $\mathbf{Z}$，全局池化得 $\mathbf{z}$，解码器输出 $\mathbf{Y}$。伪代码见算法~\ref{alg:hsmrf}。
+\subsection{训练与数据切分}
 
-\begin{algorithm}[H]
-\caption{多分辨率模型前向传播}\label{alg:hsmrf}
-\begin{algorithmic}[1]
-\REQUIRE 输入 $\mathbf{X} \in \mathbb{R}^{B \times 90 \times 24}$，预测步长 $h$
-\ENSURE 预测 $\mathbf{Y} \in \mathbb{R}^{B \times h}$
-\STATE $\mathbf{H} \leftarrow \text{Conv1D}(\mathbf{X}^T)$ \COMMENT{共享卷积编码}
-\IF{$h = 365$}
-    \STATE $\mathbf{H} \leftarrow \text{AdaptiveAvgPool}(\mathbf{H}, 30)$ \COMMENT{压缩时间分辨率}
-\ENDIF
-\STATE $p \leftarrow 1$（若 $h=90$）或 $3$（若 $h=365$） \COMMENT{分块大小}
-\STATE $\mathbf{Z} \leftarrow \text{Patch}(\mathbf{H}, p) \rightarrow \text{Linear} \rightarrow \text{Transformer}$
-\STATE $\mathbf{z} \leftarrow \text{GlobalAvgPool}(\mathbf{Z})$
-\IF{$h = 90$}
-    \STATE $\mathbf{Y} \leftarrow \text{Linear}_{90}(\mathbf{z})$
-\ELSE
-    \STATE $\mathbf{Y}_{\text{coarse}} \leftarrow \text{Linear}_{52}(\mathbf{z})$ \COMMENT{周级粗预测}
-    \STATE $\mathbf{Y}_{\text{interp}} \leftarrow \text{Interpolate}(\mathbf{Y}_{\text{coarse}}, 365)$
-    \STATE $\mathbf{Y} \leftarrow \text{Conv1D\_Refine}(\mathbf{Y}_{\text{interp}})$ \COMMENT{卷积精修}
-\ENDIF
-\RETURN $\mathbf{Y}$
-\end{algorithmic}
-\end{algorithm}
+所有神经网络使用 Adam 优化器，学习率为 $10^{-3}$，权重衰减为 $10^{-5}$，批大小为 32，最多训练 100 轮。验证 MSE 连续 10 轮没有下降时停止训练。5 个随机种子分别为 42、123、456、789 和 2024。
 
-主要超参数：卷积核 7，模型宽度 64，Transformer 4 头 2 层，粗预测 52 周。具体取值依据见第~\ref{sec:hyper}~节。
+训练窗口按一天步长生成，验证集和最终留出评估各保留一个固定预测起点。训练、验证和最终留出区间的目标不重叠，归一化器只在验证目标开始前的数据上拟合。90 天任务包含 813 个训练窗口，验证目标为 2009-10-03 至 2009-12-31，最终留出目标为 2010-08-29 至 2010-11-26。365 天任务包含 228 个训练窗口，验证目标为 2008-11-27 至 2009-11-26，最终留出目标为 2009-11-27 至 2010-11-26。
+
+测试文件本身只有 330 天，无法单独组成 365 天目标区间。因此，长期任务报告的是跨官方训练/测试文件边界的最终留出区间：完整连续序列末端的 365 天，其中前 35 天位于训练文件末尾。对应验证目标在 2009-11-26 结束，与最终留出目标不重叠；时间顺序也未被打乱\cite{tashman,hyndman_tscv}。
 
 \section{结果与分析}
 
-训练集为 2006-12-16 至 2009-12-31（1112 天），测试集为 2010-01-01 至 2010-11-26（330 天）。90 天任务在测试集内滑动取窗评估；365 天任务因测试段长度不足，输入取训练集末尾 90 天，目标取测试集起始段真实值。指标均在千瓦量纲下计算。
-
 \subsection{主实验结果}
 
+评价指标定义为
+\begin{equation}
+\mathrm{MSE}=\frac{1}{h}\sum_{i=1}^{h}(y_i-\hat y_i)^2,
+\qquad
+\mathrm{MAE}=\frac{1}{h}\sum_{i=1}^{h}|y_i-\hat y_i|.
+\end{equation}
+季节性朴素和 Ridge 是确定性基线，只运行一次。神经网络表中的标准差来自 5 次独立训练。
+
 \begin{table}[H]
 \centering
-\caption{短期预测（90 天）结果}
-\begin{tabular}{lcc}
+\caption{固定测试起点上的预测结果（神经网络为 mean$\pm$sample std）}
+\label{tab:main}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{lcccc}
 \toprule
-模型 & MSE (kW$^2$) & MAE (kW) \\
+模型 & \multicolumn{2}{c}{90 天预测} & \multicolumn{2}{c}{365 天预测} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & MSE (kWh$^2$) & MAE (kWh) & MSE (kWh$^2$) & MAE (kWh) \\
 \midrule
-季节性朴素基线 & 566,327 & 610.0 \\
-LSTM & 268,942 $\pm$ 9,986 & 402.3 $\pm$ 5.5 \\
-Transformer & 251,819 $\pm$ 15,879 & 397.2 $\pm$ 15.4 \\
-多分辨率模型 & 259,395 $\pm$ 27,947 & 401.8 $\pm$ 19.9 \\
+季节性朴素 & 85.33 & 7.09 & 91.16 & 7.30 \\
+Ridge 直接多步 & 143.85 & 9.41 & 65.65 & 6.31 \\
+LSTM & $55.66\pm3.06$ & $5.60\pm0.15$ & $60.60\pm2.12$ & $6.09\pm0.15$ \\
+Transformer & $56.98\pm1.48$ & $5.66\pm0.22$ & $62.04\pm3.84$ & $6.16\pm0.22$ \\
+HCMRF & $\mathbf{51.59\pm2.60}$ & $\mathbf{5.39\pm0.15}$ &
+$\mathbf{49.72\pm0.65}$ & $\mathbf{5.45\pm0.08}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[H]
-\centering
-\caption{长期预测（365 天）结果}
-\begin{tabular}{lcc}
-\toprule
-模型 & MSE (kW$^2$) & MAE (kW) \\
-\midrule
-季节性朴素基线 & 343,067 & 444.5 \\
-LSTM & 591,410 $\pm$ 17,930 & 600.7 $\pm$ 9.2 \\
-Transformer & 487,139 $\pm$ 20,849 & 542.6 $\pm$ 13.2 \\
-多分辨率模型 & 372,467 $\pm$ 21,793 & 474.9 $\pm$ 23.2 \\
-\bottomrule
-\end{tabular}
-\end{table}
+90 天任务中，LSTM 和 Transformer 的结果相近，平均 MSE 分别为 55.66 和 56.98。HCMRF 的 MSE 为 51.59，相比 LSTM 下降 7.3\%，相比 Transformer 下降 9.5\%。在 90 天跨度上，保留日级分辨率的一维卷积配合较小编码器已能取得较好效果。
 
-90 天任务上，三种神经网络模型的 MSE 约为朴素基线的一半，彼此差距落在标准差范围内，Transformer 略低（251,819），多分辨率模型居中（259,395）。短期窗口较短，特征工程和训练策略的影响往往大于结构差异。
-
-365 天任务的情况不同：朴素基线在 MSE 和 MAE 上均优于全部深度学习模型——去年同日这一简单规则，已经抓住了年度季节性的主体。在神经网络内部比较，多分辨率模型 MSE 372,467，比 Transformer（487,139）低约 23\%，比 LSTM（591,410）低约 37\%。训练样本只有约 1100 天，复杂模型容易拟合训练期噪声，反而在年度外推上吃亏；这与 M 竞赛等工作中「简单季节模型在长程预测中仍很强」的经验一致。
-
-\subsection{消融实验（365 天）}
-
-90 天路径不做池化且分块大小为 1，消融对其几乎无影响，因此只在 365 天上报告。
-
-\begin{table}[H]
-\centering
-\caption{消融实验——365 天 MSE}
-\begin{tabular}{lcc}
-\toprule
-变体 & MSE (kW$^2$) & 考察问题 \\
-\midrule
-完整模型 & 372,467 $\pm$ 21,793 & — \\
-去掉多尺度池化 & 377,092 $\pm$ 29,260 & 压缩分辨率是否有用 \\
-去掉自适应分块 & 395,180 $\pm$ 30,311 & 动态分块是否优于固定分块 \\
-去掉动态解码器 & 547,034 $\pm$ 12,217 & 粗到精解码是否必要 \\
-去掉共享编码器 & 382,614 $\pm$ 40,414 & 两套编码器是否更好 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-去掉动态解码器后 MSE 升至 547,034（+47\%），是贡献最大的组件：直接回归 365 个点误差累积明显，先预测 52 周再插值、卷积修正更稳。多尺度池化（+1.2\%）、自适应分块（+6\%）、共享编码器（+3\%）也有正向作用，但幅度较小。
-
-\subsection{超参数消融（365 天）}
-\label{sec:hyper}
-
-\begin{table}[H]
-\centering
-\caption{超参数消融——365 天 MSE}
-\begin{tabular}{lcc}
-\toprule
-超参数 & 候选值 & MSE (kW$^2$) \\
-\midrule
-\multirow{3}{*}{池化压缩因子} & 2 & 378,139 $\pm$ 34,028 \\
- & 3 & 372,472 $\pm$ 21,795 \\
- & 4 & 372,472 $\pm$ 21,795 \\
-\midrule
-\multirow{3}{*}{解码器卷积核} & 3 & 387,296 $\pm$ 87,371 \\
- & 5 & 406,937 $\pm$ 75,511 \\
- & 7 & 372,469 $\pm$ 21,794 \\
-\midrule
-\multirow{2}{*}{粗预测周数} & 26 & 433,781 $\pm$ 37,703 \\
- & 52 & 372,473 $\pm$ 21,795 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-压缩因子 3 与 4 结果接近，因子 2 略差；解码器卷积核取 7 时 MSE 最低且方差明显小于 3 和 5；粗预测 52 周优于 26 周。当前配置（因子 3、核 7、52 周）与上述结果一致。
-
-\subsection{可视化}
+365 天任务的差距更大。HCMRF 的平均 MSE 为 49.72，低于 LSTM 的 60.60、Transformer 的 62.04 和 Ridge 的 65.65；5 次训练的标准差为 0.65，也小于另外两种神经网络。Ridge 在 365 天任务上明显优于其 90 天结果——年度低频变化对线性模型而言相对容易拟合。
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{../outputs/figures/comparison_90d.png}
-\caption{短期预测（90 天）曲线对比}
+\includegraphics[width=0.93\textwidth]{../outputs/revised/figures/result_snapshot.png}
+\caption{正式实验的运行命令与结果截图}
+\label{fig:snapshot}
 \end{figure}
 
-\begin{figure}[H]
+\subsection{365 天消融实验}
+
+为确定各组件的贡献，依次移除 HCM 的池化压缩（仍保留 $patch=3$）、把 patch 大小固定为 1、把粗粒度解码器替换为直接输出 365 天的全连接层。结果见表~\ref{tab:ablation}。
+
+\begin{table}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{../outputs/figures/comparison_365d.png}
-\caption{长期预测（365 天）曲线对比（365 天输出较平滑，难以拟合日级尖峰）}
-\end{figure}
+\caption{365 天预测的组件消融结果}
+\label{tab:ablation}
+\begin{tabular}{lccr}
+\toprule
+配置 & MSE (kWh$^2$) & MAE (kWh) & MSE 变化 \\
+\midrule
+完整 HCMRF & $49.72\pm0.65$ & $5.45\pm0.08$ & --- \\
+移除 HCM 池化压缩 & $52.23\pm2.94$ & $5.51\pm0.11$ & +5.0\% \\
+固定 patch 为 1 & $51.25\pm2.04$ & $5.49\pm0.14$ & +3.1\% \\
+改为直接输出 365 天 & $62.79\pm2.90$ & $6.24\pm0.18$ & +26.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+取消粗粒度解码后 MSE 升至 62.79，幅度远超另外两项。HCM 池化压缩和 adaptive patch 有一定贡献，但平均仅差 5.0\% 和 3.1\%，不同种子之间的排序存在波动。本组实验中，365 天性能的优劣主要取决于输出结构。
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{../outputs/figures/ablation_mse_h365.png}
-\caption{消融实验 MSE 对比（365 天）}
+\includegraphics[width=0.82\textwidth]{../outputs/revised/figures/ablation_mse_h365.png}
+\caption{365 天消融实验 MSE，误差棒为 5 次训练的样本标准差}
+\label{fig:ablation}
 \end{figure}
+
+\subsection{预测曲线}
+
+图~\ref{fig:curves} 给出随机种子 42 的预测曲线。三种神经网络均能跟踪较慢的季节变化，但日级尖峰普遍难以捕捉。365 天 HCMRF 的曲线最为平滑，这符合预期——先预测 52 个粗粒度值再插值，自然会滤除高频波动。其改进体现在整体水平和低频走势上，日级峰值的偏差仍然较大。
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{../outputs/figures/hyperparam_ablation.png}
-\caption{超参数消融对比（365 天）}
+\begin{subfigure}{0.98\textwidth}
+\centering
+\includegraphics[width=\textwidth]{../outputs/revised/figures/comparison_90d.png}
+\caption{90 天测试窗口}
+\end{subfigure}
+
+\vspace{0.6em}
+\begin{subfigure}{0.98\textwidth}
+\centering
+\includegraphics[width=\textwidth]{../outputs/revised/figures/comparison_365d.png}
+\caption{365 天测试窗口}
+\end{subfigure}
+\caption{三种神经网络的预测曲线与真实日用电量}
+\label{fig:curves}
 \end{figure}
 
 \section{讨论}
 
-短期任务上，神经网络相对朴素基线的提升是实实在在的，三种结构差别不大。长期任务上，朴素基线仍然最强，说明在这份单户、小样本数据里，年度周期比网络结构更决定误差下限。多分辨率模型的价值主要体现在深度学习内部：365 天上比 Transformer 少约 23\% 的 MSE，消融也表明动态解码器不可或缺——去掉它误差立刻回到与 LSTM 相近的水平。
+\subsection{结果解释}
 
-另一方面，多尺度池化和自适应分块的边际收益只有 1\%--6\%，365 天实验的标准差也偏大（$\pm$ 22k），说明在 1112 天训练数据下，复杂模块未必划算。若继续改进，更自然的方向是训练单一多任务模型，用步长嵌入或条件调制层让网络自己切换分辨率，而不是为 90 天和 365 天各训一套；天气特征目前只有月粒度、且仅来自一户家庭，泛化性也有限。这些限制已在实现中接受，留作后续工作。
+基础模型的对比表明：在这组数据上，自注意力并未自动优于循环网络。输入序列仅有 90 步，数据又仅来自一个家庭，两层 LSTM 已能覆盖主要的变化模式。Transformer 参数更多，测试误差却与 LSTM 接近。
 
-\subsection{局限性与后续方向}
+HCMRF 在两个跨度上均取得最低的平均误差，长期任务的提升更为显著。消融实验将原因归结于解码端：先构建年度骨架再填充日级细节，比直接输出 365 个日值更适应当前的数据量。编码端的 HCM 池化压缩和 adaptive patch 提供的改进幅度较小，这两个组件的必要性尚需更多测试起点加以验证。
 
-\begin{itemize}
-    \item \textbf{分模型训练：}90 天与 365 天各自独立训练，步长分支无法在线切换；理想做法是共享编码器、双解码头，并用条件调制注入步长信息。
-    \item \textbf{数据量：}单户 1112 天，对深层结构偏少。
-    \item \textbf{天气特征：}月粒度，同月各日相同，信息有限。
-    \item \textbf{泛化性：}结论仅针对这一户法国家庭，外推需谨慎。
-\end{itemize}
+参数量并非决定性因素。HCMRF 参数少于 LSTM 和 Transformer，365 天误差却更低。在这组数据上，输出结构与预测跨度的匹配程度，比增加隐藏维度更为有效。
+
+\subsection{局限与后续改进}
+
+实验仅在一个固定测试起点上进行。5 个随机种子只能反映训练波动，不能替代多个时间起点的滚动评估。后续可采用 expanding-window 策略，在不同季节设测试起点，检验模型排序是否稳定\cite{hyndman_tscv}。
+
+数据局限性同样显著：仅有一个家庭，月度天气变量在同月内完全相同。若拥有更多家庭的数据，可按家庭划分训练集和测试集；在现有数据上，可按工作日/周末、高负荷/低负荷时段分别报告误差。针对长期预测曲线偏平滑的问题，可尝试分位数损失函数或直接输出预测区间，以不确定性范围来刻画一年期的预测值。
+
+实验在 90 天和 365 天两个直接多步预测任务上，比较了三种神经网络和两个简单基线。HCMRF 在两个跨度上均取得了最低的平均 MSE 和 MAE，365 天消融实验表明粗到细的解码方式贡献最大。HCM 池化压缩和 adaptive patch 的改进幅度较小，其必要性尚需更多测试起点加以验证。
 
 \begin{thebibliography}{99}
-\bibitem{uci_power} Hebrail, O. (2012). Individual household electric power consumption. UCI Machine Learning Repository.
-\bibitem{lstm} Hochreiter, S., \& Schmidhuber, J. (1997). Long short-term memory. \textit{Neural Computation}, 9(8), 1735--1780.
-\bibitem{transformer} Vaswani, A., et al. (2017). Attention is all you need. \textit{NeurIPS}, 30.
-\bibitem{patchtst} Nie, Y., et al. (2023). A time series is worth 64 words. \textit{ICLR}.
-\bibitem{m4} Makridakis, S., et al. (2020). The M4 Competition: 100,000 time series and 61 forecasting methods. \textit{International Journal of Forecasting}, 36(1), 54--74.
+\bibitem{uci_power}
+G. Hebrail and A. Berard, \textit{Individual Household Electric Power Consumption}, UCI Machine Learning Repository, 2006. doi: \url{https://doi.org/10.24432/C58K54}.
+
+\bibitem{meteo_monthly}
+Météo-France, \textit{Données climatologiques de base - mensuelles}, data.gouv.fr, accessed July 2026. \url{https://www.data.gouv.fr/datasets/donnees-climatologiques-de-base-mensuelles}.
+
+\bibitem{lstm}
+S. Hochreiter and J. Schmidhuber, ``Long short-term memory,'' \textit{Neural Computation}, vol. 9, no. 8, pp. 1735--1780, 1997. doi: \url{https://doi.org/10.1162/neco.1997.9.8.1735}.
+
+\bibitem{transformer}
+A. Vaswani et al., ``Attention is all you need,'' in \textit{Advances in Neural Information Processing Systems}, vol. 30, 2017. \url{https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html}.
+
+\bibitem{patchtst}
+Y. Nie et al., ``A time series is worth 64 words: Long-term forecasting with Transformers,'' in \textit{International Conference on Learning Representations}, 2023. \url{https://openreview.net/forum?id=Jbdc0vTOcol}.
+
+\bibitem{dlinear}
+A. Zeng et al., ``Are Transformers effective for time series forecasting?'' in \textit{Proceedings of the AAAI Conference on Artificial Intelligence}, vol. 37, no. 9, pp. 11121--11128, 2023. doi: \url{https://doi.org/10.1609/aaai.v37i9.26317}.
+
+\bibitem{tashman}
+L. J. Tashman, ``Out-of-sample tests of forecasting accuracy: an analysis and review,'' \textit{International Journal of Forecasting}, vol. 16, no. 4, pp. 437--450, 2000. doi: \url{https://doi.org/10.1016/S0169-2070(00)00065-0}.
+
+\bibitem{hyndman_tscv}
+R. J. Hyndman and G. Athanasopoulos, \textit{Forecasting: Principles and Practice}, 3rd ed., Sec. 5.10, 2021. \url{https://otexts.com/fpp3/tscv.html}.
+
+\bibitem{m4}
+S. Makridakis, E. Spiliotis, and V. Assimakopoulos, ``The M4 Competition: 100,000 time series and 61 forecasting methods,'' \textit{International Journal of Forecasting}, vol. 36, no. 1, pp. 54--74, 2020. doi: \url{https://doi.org/10.1016/j.ijforecast.2019.04.014}.
 \end{thebibliography}
+
+\section*{AI 工具使用声明}
+本报告在行文组织和语言润色阶段使用了 ChatGPT 辅助。数据处理、实验设计、模型实现、实验运行、结果复核和结论分析均由作者潘沈昕独立完成；作者对报告内容及其准确性负责。
 
 \end{document}

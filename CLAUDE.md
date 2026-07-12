@@ -27,7 +27,7 @@ python -m src.run
 python -c "from src.config import Config; from src.train import train; train(Config(model_name='lstm', horizon=90, seed=42))"
 
 # Evaluate a checkpoint
-python -c "from src.config import Config; from src.evaluate import evaluate; print(evaluate(Config(model_name='lstm', horizon=90, seed=42), 'outputs/checkpoints/lstm_h90_s42.ckpt'))"
+python -c "from src.config import Config; from src.evaluate import evaluate; print(evaluate(Config(model_name='lstm', horizon=90, seed=42), 'outputs/revised/checkpoints/lstm_h90_s42.ckpt'))"
 
 # Generate visualizations
 python -c "from src import visualize"
@@ -44,10 +44,10 @@ src/
 ├── models/
 │   ├── lstm.py            # LSTMModel — 2-layer LSTM + linear head
 │   ├── transformer.py     # TransformerModel — encoder + global avg pool + head
-│   ├── hcmrf.py           # HCMRF — SharedEncoder → HCM → AdaptivePatch → Transformer → DRD
-│   ├── hcmrf_ablations.py # 5 ablation variants (inherit from HCMRF)
+│   ├── hcmrf.py           # HCMRF — Conv1D → HCM → AdaptivePatch → Transformer → DRD
+│   ├── hcmrf_ablations.py # 3 official ablation variants (inherit from HCMRF)
 │   └── components/
-│       ├── hcm.py             # Horizon Conditioning Module (resolution compression + channel gating)
+│       ├── hcm.py             # Horizon Conditioning Module (resolution compression)
 │       ├── adaptive_patch.py  # Adaptive-Patch Transformer (horizon-dependent patching)
 │       └── drd.py             # Dynamic Resolution Decoder (coarse→upsample→refine for 365d)
 │
@@ -69,7 +69,7 @@ src/
 
 **HCMRF architecture flow:**
 ```
-Input (B, 90, n_features) → Conv1D encoder → HCM (resolution + gate)
+Input (B, 90, n_features) → Conv1D encoder → HCM (resolution compression)
   → Adaptive-Patch Transformer (patch_size: 1 for 90d, 3 for 365d)
   → GlobalAvgPool → DRD (90d: direct; 365d: coarse 52-week → upsample → Conv1D refine)
 ```
@@ -77,11 +77,9 @@ Input (B, 90, n_features) → Conv1D encoder → HCM (resolution + gate)
 **Ablation variants** (`hcmrf_ablations.py`):
 | Variant | Removed Component |
 |---------|------------------|
-| `HCMRF_wo_HCM` | Horizon conditioning (no compression, no gating, fixed patch=1) |
+| `HCMRF_wo_MultiScale` | HCM resolution compression (365d keeps 90 steps before patching) |
 | `HCMRF_wo_Patch` | Adaptive patching (fixed patch=1, keep HCM) |
 | `HCMRF_wo_DRD` | Coarse-to-fine decoder (direct Dense(365)) |
-| `HCMRF_wo_Gate` | Channel gating (keep resolution compression) |
-| `HCMRF_wo_Shared` | Shared encoder (independent encoders per horizon) |
 
 ## Data Pipeline
 

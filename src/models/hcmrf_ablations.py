@@ -55,10 +55,12 @@ class HCMRF_wo_DRD(HCMRF):
     def __init__(self, n_features: int, d_model: int = 64, n_heads: int = 4, n_layers: int = 2,
                  dropout: float = 0.1, dim_feedforward: int = 256, encoder_kernel_size: int = 7,
                  hcm_compress_factor: int = 3, hcm_min_steps: int = 30,
-                 drd_coarse_weeks: int = 52, drd_refine_layers: int = 3, drd_refine_kernel: int = 7):
+                 drd_coarse_weeks: int = 52, drd_refine_layers: int = 3, drd_refine_kernel: int = 7,
+                 patch_size_90d: int = 1, patch_size_365d: int = 3):
         super().__init__(n_features, d_model, n_heads, n_layers, dropout, dim_feedforward,
                          encoder_kernel_size, hcm_compress_factor, hcm_min_steps,
-                         drd_coarse_weeks, drd_refine_layers, drd_refine_kernel)
+                         drd_coarse_weeks, drd_refine_layers, drd_refine_kernel,
+                         patch_size_90d, patch_size_365d)
         self.direct_head = nn.Linear(d_model, 365)
 
     def forward(self, x, horizon):
@@ -81,10 +83,12 @@ class HCMRF_wo_Shared(HCMRF):
     def __init__(self, n_features: int, d_model: int = 64, n_heads: int = 4, n_layers: int = 2,
                  dropout: float = 0.1, dim_feedforward: int = 256, encoder_kernel_size: int = 7,
                  hcm_compress_factor: int = 3, hcm_min_steps: int = 30,
-                 drd_coarse_weeks: int = 52, drd_refine_layers: int = 3, drd_refine_kernel: int = 7):
+                 drd_coarse_weeks: int = 52, drd_refine_layers: int = 3, drd_refine_kernel: int = 7,
+                 patch_size_90d: int = 1, patch_size_365d: int = 3):
         super().__init__(n_features, d_model, n_heads, n_layers, dropout, dim_feedforward,
                          encoder_kernel_size, hcm_compress_factor, hcm_min_steps,
-                         drd_coarse_weeks, drd_refine_layers, drd_refine_kernel)
+                         drd_coarse_weeks, drd_refine_layers, drd_refine_kernel,
+                         patch_size_90d, patch_size_365d)
         self.encoder_365 = nn.Conv1d(n_features, d_model, kernel_size=encoder_kernel_size, padding="same")
 
     def forward(self, x, horizon):

@@ -42,7 +42,7 @@ def load_config_from_yaml(yaml_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def yaml_to_config(yaml_cfg: dict, overrides: dict = None) -> Config:
+def yaml_to_config(yaml_cfg: dict, overrides: dict | None = None) -> Config:
     """将 YAML 配置字典转换为 Config 对象。
 
     Args:
@@ -63,9 +63,24 @@ def yaml_to_config(yaml_cfg: dict, overrides: dict = None) -> Config:
 
     if "training" in yaml_cfg:
         train_cfg = yaml_cfg["training"]
-        for k in ["batch_size", "max_epochs", "patience", "learning_rate", "weight_decay", "seed"]:
+        for k in ["batch_size", "max_epochs", "patience", "learning_rate", "weight_decay", "seed", "output_root"]:
             if k in train_cfg:
                 setattr(cfg, k, train_cfg[k])
+
+    for section, prefix, keys in [
+        ("lstm", "lstm", ["hidden_dim", "num_layers", "dropout"]),
+        ("transformer", "transformer", ["d_model", "n_heads", "n_layers", "dim_feedforward", "dropout"]),
+        ("hcmrf", "hcmrf", [
+            "d_model", "n_heads", "n_layers", "dim_feedforward", "dropout",
+            "encoder_kernel_size", "drd_coarse_weeks", "drd_refine_layers",
+            "drd_refine_kernel", "hcm_compress_factor", "hcm_min_steps",
+            "patch_size_90d", "patch_size_365d",
+        ]),
+    ]:
+        if section in yaml_cfg:
+            for key in keys:
+                if key in yaml_cfg[section]:
+                    setattr(cfg, f"{prefix}_{key}", yaml_cfg[section][key])
 
     # 命令行参数覆盖
     if overrides:
@@ -102,11 +117,12 @@ def cmd_run_all(args):
     """运行所有实验。"""
     if args.config:
         yaml_cfg = load_config_from_yaml(args.config)
-        # TODO: 从 YAML 加载种子列表
-        pass
+        config = yaml_to_config(yaml_cfg)
+    else:
+        config = Config()
 
     from .run import run_all
-    run_all()
+    run_all(config=config)
 
 
 def cmd_evaluate(args):
@@ -121,7 +137,7 @@ def cmd_evaluate(args):
 
 def cmd_visualize(args):
     """生成可视化。"""
-    from .visualize import plot_predictions
+    from .visualize import plot_model_comparison
 
     ckpt_paths = {}
     for item in args.checkpoints:
@@ -129,7 +145,7 @@ def cmd_visualize(args):
         ckpt_paths[name] = path
 
     save_path = f"outputs/figures/comparison_{args.horizon}d.png"
-    plot_predictions(ckpt_paths, args.horizon, save_path)
+    plot_model_comparison(ckpt_paths, args.horizon, save_path)
 
 
 def main():

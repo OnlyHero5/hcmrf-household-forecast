@@ -80,7 +80,6 @@ class TransformerModel(nn.Module):
         Returns:
             (B, horizon) 预测张量，对所有时间步做全局平均池化后输出
         """
-        x = self.embed(x)
-        x = x + self.pos(x)
+        x = self.pos(self.embed(x))
         x = self.encoder(x)
         return self.head(x.mean(dim=1))

@@ -8,8 +8,7 @@ data:
   input_len: 90                # 输入窗口长度（天）
   short_horizon: 90            # 短期预测 horizon
   long_horizon: 365            # 长期预测 horizon
-  step_size: 7                 # 滑动窗口步长（>1 减少样本重叠）
-  val_ratio: 0.2               # 验证集比例（取训练集末尾）
+  step_size: 1                 # 训练窗口步长；验证/测试为隔离的固定预测起点
 
 # 训练配置
 training:
@@ -19,6 +18,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.00001
   seed: 42
+  output_root: "outputs/revised"
 
 # LSTM 模型配置
 lstm:

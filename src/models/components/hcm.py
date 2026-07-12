@@ -2,7 +2,7 @@
 
 核心功能：
   90d: 保持原始时序分辨率（T' = T = 90）
-  365d: 使用 AdaptiveAvgPool1d 压缩到 ~30 步，捕捉季节趋势
+  365d: 使用 AdaptiveAvgPool1d 按压缩因子降低分辨率，捕捉季节趋势
 
 设计约束：
   由于 90d 和 365d 模型分别训练（课程硬性要求），每个模型实例只看到一个 horizon，
@@ -23,7 +23,7 @@ class HorizonConditioning(nn.Module):
 
     输出:
         forward(x, horizon): (B, T', d_model) 经过分辨率调整的张量
-        T' = T（90d）或 ~30（365d）
+        T' = T（90d）或 max(T // compress_factor, min_steps)（365d）
     """
 
     def __init__(self, d_model: int, compress_factor: int = 3, min_steps: int = 30):
@@ -45,7 +45,6 @@ class HorizonConditioning(nn.Module):
             # 90d: 不压缩时序分辨率
             return x
         else:
-            # 365d: 固定压缩到 ~30 步
             T = x.size(1)
             out_T = max(T // self.compress_factor, self.min_steps)
             return F.adaptive_avg_pool1d(x.transpose(1, 2), out_T).transpose(1, 2)

@@ -7,6 +7,8 @@
   90d: patch_size=1（细粒度注意力，捕捉局部波动）
   365d: patch_size=3（粗粒度注意力，减少序列长度，关注全局趋势）
 """
+import math
+
 import torch
 import torch.nn as nn
 
@@ -36,6 +38,19 @@ class AdaptivePatchTransformer(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
 
+    @staticmethod
+    def _positional_encoding(length: int, d_model: int, device, dtype) -> torch.Tensor:
+        """生成与 token 顺序对应的固定正弦/余弦位置编码。"""
+        position = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, device=device, dtype=dtype)
+            * (-math.log(10000.0) / d_model)
+        )
+        pe = torch.zeros(length, d_model, device=device, dtype=dtype)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe
+
     def forward(self, x: torch.Tensor, patch_size: int) -> torch.Tensor:
         """前向传播 — patch 拼接 + 投影 + Transformer 编码。
 
@@ -53,5 +68,6 @@ class AdaptivePatchTransformer(nn.Module):
             x = x[:, : T_patched * patch_size].reshape(B, T_patched, C * patch_size)
             # 投影回 d_model 维度
             x = self.projection(x)
+        x = x + self._positional_encoding(x.size(1), x.size(2), x.device, x.dtype)
         # Transformer 编码
         return self.encoder(x)

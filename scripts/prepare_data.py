@@ -43,26 +43,29 @@ print("\n" + "=" * 60)
 print("Step 2: 按天聚合...")
 print("=" * 60)
 
-# 按 PDF 要求聚合：
-# global_active_power, global_reactive_power, sub_metering_1/2/3 → 按天求和
-# voltage, global_intensity → 按天平均
-daily_sum_cols = ['Global_active_power', 'Global_reactive_power',
-                  'Sub_metering_1', 'Sub_metering_2']
-daily_mean_cols = ['Voltage', 'Global_intensity']
+# Global_active_power / Global_reactive_power 是分钟区间内的平均功率（kW / kVAr）。
+# 日级求和后除以 60，得到具有物理意义的日能耗（kWh / kVArh）。
+# 三路 sub-metering 已是每分钟的 Wh，日级直接求和即可。
+grouped = df.groupby('Date_only')
+daily = pd.DataFrame({
+    'Global_active_power': grouped['Global_active_power'].sum(min_count=1) / 60.0,
+    'Global_reactive_power': grouped['Global_reactive_power'].sum(min_count=1) / 60.0,
+    'Voltage': grouped['Voltage'].mean(),
+    'Global_intensity': grouped['Global_intensity'].mean(),
+    'Sub_metering_1': grouped['Sub_metering_1'].sum(min_count=1),
+    'Sub_metering_2': grouped['Sub_metering_2'].sum(min_count=1),
+    'Sub_metering_3': grouped['Sub_metering_3'].sum(min_count=1),
+})
 
-daily_agg = {}
-for c in daily_sum_cols:
-    daily_agg[c] = 'sum'
-for c in daily_mean_cols:
-    daily_agg[c] = 'mean'
-daily_agg['Sub_metering_3'] = 'sum'
+# 恢复原始记录中完全缺失的日期。否则 groupby 会丢掉整日，后续窗口不再连续。
+full_dates = pd.date_range(df['Date_only'].min(), df['Date_only'].max(), freq='D')
+daily = daily.reindex(full_dates)
+daily.index.name = 'Date'
+daily = daily.reset_index()
 
-daily = df.groupby('Date_only').agg(daily_agg).reset_index()
-daily.rename(columns={'Date_only': 'Date'}, inplace=True)
-
-# 计算剩余功率：remainder = (global_active_power * 1000 / 60) - (sub1 + sub2 + sub3)
+# 计算未被三路分表覆盖的日能耗（Wh）。Global_active_power 已转换为 kWh。
 daily['Sub_metering_remainder'] = (
-    (daily['Global_active_power'] * 1000 / 60) -
+    (daily['Global_active_power'] * 1000) -
     (daily['Sub_metering_1'] + daily['Sub_metering_2'] + daily['Sub_metering_3'])
 )
 
@@ -71,10 +74,15 @@ na_counts = df.groupby('Date_only').apply(
     lambda x: pd.Series({'na_count': x[numeric_cols].isna().any(axis=1).sum(),
                          'total_count': len(x)})
 ).reset_index()
+na_counts['Date_only'] = pd.to_datetime(na_counts['Date_only'])
 daily = daily.merge(na_counts, left_on='Date', right_on='Date_only', how='left')
 daily.drop('Date_only', axis=1, inplace=True)
-
-daily['na_ratio'] = daily['na_count'] / daily['total_count']
+daily[['na_count', 'total_count']] = daily[['na_count', 'total_count']].fillna(0)
+daily['na_ratio'] = np.where(
+    daily['total_count'] > 0,
+    daily['na_count'] / daily['total_count'],
+    1.0,
+)
 
 print(f"Aggregated to {len(daily)} daily records")
 print(f"Columns: {list(daily.columns)}")
@@ -148,6 +156,13 @@ daily = daily.sort_values('Date').reset_index(drop=True)
 daily[numeric_cols] = daily[numeric_cols].interpolate(method='linear', limit=5)
 # 前向/后向填充剩余缺失值
 daily[numeric_cols] = daily[numeric_cols].ffill().bfill()
+# 分表剩余量依赖已插值的主表和三路分表，必须在填补后重新计算。
+daily['Sub_metering_remainder'] = (
+    daily['Global_active_power'] * 1000
+    - daily['Sub_metering_1']
+    - daily['Sub_metering_2']
+    - daily['Sub_metering_3']
+)
 # 天气列也用前向/后向填充
 daily[['RR', 'NBJRR1', 'NBJRR5', 'NBJRR10', 'NBJBROU']] = \
     daily[['RR', 'NBJRR1', 'NBJRR5', 'NBJRR10', 'NBJBROU']].ffill().bfill()
